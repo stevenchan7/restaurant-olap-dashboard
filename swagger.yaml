@@ -1,0 +1,404 @@
+openapi: 3.0.3
+info:
+  title: Restaurant OLAP Dashboard API
+  description: REST API for the restaurant simulation dashboard — controls background workers and exposes live order/payment data.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:{port}
+    variables:
+      port:
+        default: "3000"
+
+tags:
+  - name: Health
+    description: Server health and worker status
+  - name: Simulator
+    description: Start and stop background workers
+  - name: Orders
+    description: Order data and statistics
+  - name: Payments
+    description: Payment data
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      responses:
+        "200":
+          description: Server is up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /status:
+    get:
+      tags: [Health]
+      summary: Worker status
+      description: Returns the running state, tick count, and last run time for each background worker.
+      responses:
+        "200":
+          description: Current worker states
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+
+  /simulator/start:
+    post:
+      tags: [Simulator]
+      summary: Start all workers
+      responses:
+        "200":
+          description: All workers started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: All workers started
+
+  /simulator/stop:
+    post:
+      tags: [Simulator]
+      summary: Stop all workers
+      responses:
+        "200":
+          description: All workers stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: All workers stopped
+
+  /simulator/{worker}/start:
+    post:
+      tags: [Simulator]
+      summary: Start a specific worker
+      parameters:
+        - $ref: "#/components/parameters/WorkerParam"
+      responses:
+        "200":
+          description: Worker started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: order started
+        "404":
+          description: Unknown worker name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: Unknown worker
+
+  /simulator/{worker}/stop:
+    post:
+      tags: [Simulator]
+      summary: Stop a specific worker
+      parameters:
+        - $ref: "#/components/parameters/WorkerParam"
+      responses:
+        "200":
+          description: Worker stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: order stopped
+        "404":
+          description: Unknown worker name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: Unknown worker
+
+  /orders:
+    get:
+      tags: [Orders]
+      summary: List orders by status or get aggregate stats
+      description: |
+        - With `?status=<value>`: returns an array of orders matching that status.
+        - Without `status`: returns aggregate order statistics (counts and revenue).
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter orders by status. Must be one of the valid `OrderStatus` values.
+          schema:
+            $ref: "#/components/schemas/OrderStatus"
+      responses:
+        "200":
+          description: Orders array (when status provided) or stats object
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items:
+                      $ref: "#/components/schemas/Order"
+                  - $ref: "#/components/schemas/OrderStats"
+        "400":
+          description: Invalid status value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: Invalid status
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /orders/stats:
+    get:
+      tags: [Orders]
+      summary: Combined order and item statistics
+      description: Returns aggregate order counts/revenue alongside per-status item counts.
+      responses:
+        "200":
+          description: Aggregated statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CombinedStats"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /payments/recent:
+    get:
+      tags: [Payments]
+      summary: Recent payments
+      description: Returns the most recent payments joined with their order number, newest first.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of payments to return (default 20).
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+      responses:
+        "200":
+          description: List of recent payments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PaymentWithOrder"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    WorkerParam:
+      name: worker
+      in: path
+      required: true
+      description: Worker identifier (`order`, `kitchen`, or `payment`).
+      schema:
+        type: string
+        enum: [order, kitchen, payment]
+
+  responses:
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    # ── Enums ──────────────────────────────────────────────────
+
+    OrderStatus:
+      type: string
+      enum: [open, awaiting_payment, paid, cancelled]
+
+    ItemStatus:
+      type: string
+      enum: [ordered, on_process, finished, served, cancelled]
+
+    PaymentMethod:
+      type: string
+      enum: [cash, card, ewallet, bank_transfer, qris]
+
+    PaymentStatus:
+      type: string
+      enum: [pending, completed, failed, refunded]
+
+    # ── Core entities ──────────────────────────────────────────
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+        order_number:
+          type: string
+          example: ORD-20260623-001
+        table_id:
+          type: integer
+          nullable: true
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        subtotal:
+          type: string
+          description: NUMERIC returned as string by pg
+          example: "45.00"
+        tax_amount:
+          type: string
+          example: "4.50"
+        total_amount:
+          type: string
+          example: "49.50"
+        created_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Payment:
+      type: object
+      properties:
+        id:
+          type: integer
+        order_id:
+          type: integer
+        method:
+          $ref: "#/components/schemas/PaymentMethod"
+        amount:
+          type: string
+          description: NUMERIC returned as string by pg
+          example: "49.50"
+        status:
+          $ref: "#/components/schemas/PaymentStatus"
+        reference_number:
+          type: string
+          nullable: true
+          example: PAY-1750000000000-AB12CD
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    PaymentWithOrder:
+      allOf:
+        - $ref: "#/components/schemas/Payment"
+        - type: object
+          properties:
+            order_number:
+              type: string
+              example: ORD-20260623-001
+
+    # ── Stats / aggregates ─────────────────────────────────────
+
+    OrderStats:
+      type: object
+      description: Aggregate counts and revenue across all orders. Values are pg numeric strings.
+      properties:
+        open_orders:
+          type: string
+          example: "3"
+        awaiting_payment:
+          type: string
+          example: "1"
+        paid_orders:
+          type: string
+          example: "42"
+        cancelled_orders:
+          type: string
+          example: "2"
+        total_orders:
+          type: string
+          example: "48"
+        total_revenue:
+          type: string
+          example: "2079.00"
+
+    StatusCount:
+      type: object
+      properties:
+        status:
+          $ref: "#/components/schemas/ItemStatus"
+        count:
+          type: integer
+
+    CombinedStats:
+      type: object
+      properties:
+        orders:
+          $ref: "#/components/schemas/OrderStats"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatusCount"
+
+    # ── Worker ─────────────────────────────────────────────────
+
+    WorkerStatus:
+      type: object
+      properties:
+        running:
+          type: boolean
+        tickCount:
+          type: integer
+        lastRun:
+          type: string
+          format: date-time
+          nullable: true
+        lastError:
+          type: string
+          nullable: true
+
+    # ── Generic responses ──────────────────────────────────────
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        uptime:
+          type: number
+          description: Process uptime in seconds
+
+    StatusResponse:
+      type: object
+      properties:
+        workers:
+          type: object
+          properties:
+            orderGenerator:
+              $ref: "#/components/schemas/WorkerStatus"
+            kitchenProcessor:
+              $ref: "#/components/schemas/WorkerStatus"
+            paymentProcessor:
+              $ref: "#/components/schemas/WorkerStatus"
+
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
